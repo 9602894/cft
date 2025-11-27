@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>文件搜索与管理</title>
+<style>
+body{font-family:"Segoe UI",Tahoma,sans-serif;font-size:14px;color:#333;margin:0;padding:10px;}
+.back-link{display:block;margin-bottom:15px;color:#4a6cf7;text-decoration:none;}
+.search-input{padding:5px 8px;border:1px solid #ddd;width:300px;}
+.search-btn{background:#4a6cf7;color:white;border:none;padding:6px 10px;cursor:pointer;margin:0 2px;}
+.search-btn:hover{background:#3653d3;}
+.delete-btn{background:none;border:none;color:#d9534f;cursor:pointer;font-size:16px;padding:0 4px;line-height:1;}
+.delete-btn:hover{transform:scale(1.2);}
+.batch-delete-btn{background:none;border:1px solid #d9534f;color:#d9534f;padding:5px 10px;cursor:pointer;font-size:14px;border-radius:4px;margin-top:8px;}
+.batch-delete-btn:hover{background:#d9534f;color:white;}
+.file-list{margin-top:10px;}
+.file-item{padding:3px 0;display:flex;align-items:center;gap:6px;}
+.file-link{text-decoration:none;color:#1a0dab;flex-shrink:0;}
+.file-time{color:#d9534f;margin-left:5px;}
+.file-size{color:#5cb85c;margin-left:5px;}
+.remark-btn{background:none;border:none;color:#f0ad4e;cursor:pointer;font-size:14px;padding:0 4px;}
+.remark-btn:hover{color:#ec971f;}
+.password-btn{background:none;border:none;color:#5bc0de;cursor:pointer;font-size:14px;padding:0 4px;}
+.password-btn:hover{color:#31b0d5;}
+.remark-preview{color:#777;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:5px;}
+.message{margin-bottom:10px;color:#007bff;}
+input[type=checkbox]{margin-right:5px;}
+.select-controls{margin:6px 0;}
+.upload-progress{width:100%;height:18px;background:#eee;margin-top:5px;border-radius:4px;overflow:hidden;}
+.upload-bar{height:100%;width:0%;background:#4a6cf7;color:white;text-align:center;font-size:12px;line-height:18px;}
+.password-input{margin-top:6px;padding:6px;width:100%;box-sizing:border-box;border:1px solid #ddd;}
+</style>
+</head>
+
+<body>
+<a href="./" class="back-link">．．． 返回</a>
+<div id="messages"></div>
+
+<form method="post" id="searchForm">
+<label>搜索词:</label>
+<input type="text" name="keyword" class="search-input" value="">
+<label><input type="checkbox" name="include_pwd"> 显示密码文件(.pwd)</label>
+<input type="hidden" id="sortField" name="sort_field" value="ctime">
+<input type="hidden" id="sortOrder" name="sort_order" value="desc">
+<input type="submit" name="submit_search" class="search-btn" value="搜索">
+<input type="submit" name="show_all" class="search-btn" value="显示全部文件">
+<button type="button" class="search-btn" onclick="toggleSort('ctime')">时间排序 (-)</button>
+<button type="button" class="search-btn" onclick="toggleSort('size')">大小排序 (-)</button>
+<button type="button" class="search-btn" onclick="editFile()">🆕 新建文件</button>
+<button type="button" class="search-btn" onclick="uploadFiles()">📤 上传文件</button>
+</form>
+
+<div id="searchResults"></div>
+
+<script>
+// 页面加载完成后显示提示
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('messages').innerHTML = '<div class="message">请使用搜索功能或点击"显示全部文件"来查看文件列表</div>';
+});
+
+// 格式化文件大小函数
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + 'B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(2) + 'KB';
+  return (bytes / 1048576).toFixed(2) + 'MB';
+}
+
+// 排序功能
+function toggleSort(field){
+    const form = document.getElementById('searchForm');
+    const fieldInput = document.getElementById('sortField');
+    const orderInput = document.getElementById('sortOrder');
+    
+    if(fieldInput.value === field){
+        orderInput.value = (orderInput.value === 'asc') ? 'desc' : 'asc';
+    } else {
+        fieldInput.value = field;
+        orderInput.value = 'asc';
+    }
+    
+    // 移除旧的隐藏字段
+    const oldForceSearch = document.getElementById('force_search');
+    const oldForceShowAll = document.getElementById('force_show_all');
+    if(oldForceSearch) oldForceSearch.remove();
+    if(oldForceShowAll) oldForceShowAll.remove();
+    
+    // 添加新的隐藏字段
+    const hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = 'force_search';
+    hidden.id = 'force_search';
+    hidden.value = '1';
+    form.appendChild(hidden);
+    
+    form.submit();
+}
+
+// 文件选择功能
+function toggleSelectAll(check){
+    const checkboxes = document.querySelectorAll('input[name="selected_files[]"]');
+    checkboxes.forEach(function(checkbox) {
+        checkbox.checked = check;
+    });
+}
+
+function invertSelection(){
+    const checkboxes = document.querySelectorAll('input[name="selected_files[]"]');
+    checkboxes.forEach(function(checkbox) {
+        checkbox.checked = !checkbox.checked;
+    });
+}
+
+// 弹窗编辑/新建
+function editFile(filename){
+    if(filename === undefined) filename = '';
+    
+    // 移除已存在的模态框
+    const existingModal = document.getElementById('editModal');
+    const existingOverlay = document.getElementById('modalOverlay');
+    if(existingModal) existingModal.remove();
+    if(existingOverlay) existingOverlay.remove();
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.id = 'modalOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:999;';
+    overlay.onclick = function(){overlay.remove(); modal.remove();};
+    document.body.appendChild(overlay);
+
+    // 创建模态框
+    const modal = document.createElement('form');
+    modal.id = 'editModal';
+    modal.method = 'post';
+    modal.style.cssText = 'display:flex;flex-direction:column;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:700px;max-width:95%;height:550px;min-height:350px;padding:10px;background:white;border:1px solid #ccc;box-shadow:0 0 12px rgba(0,0,0,0.3);z-index:1000;';
+    
+    modal.innerHTML = '<div id="modalHeader" style="cursor:move;padding:8px 10px;background:#f1f1f1;border-bottom:1px solid #ccc;display:flex;justify-content:space-between;align-items:center;"><span>编辑文件</span><div class="btn-group"><button type="button" id="maximizeBtn">🖥️ 最大化/恢复</button><span class="close-btn" style="cursor:pointer;color:#d9534f;font-weight:bold;font-size:16px;">×</span></div></div><input type="text" name="file_name" id="edit_file_name" style="width:100%;margin-top:6px;padding:6px;box-sizing:border-box;font-family:monospace;font-size:14px;"><input type="text" name="file_password" id="edit_file_password" placeholder="文件密码（新建文件必填）" style="width:100%;margin-top:6px;padding:6px;box-sizing:border-box;font-family:monospace;font-size:14px;"><textarea name="file_content" id="edit_file_content" style="flex:1;width:100%;margin-top:6px;padding:6px;box-sizing:border-box;font-family:monospace;font-size:14px;resize:none;"></textarea><button type="submit" name="save_file" class="search-btn" style="margin-top:6px;">💾 保存文件</button><div id="resizeHandle" style="width:15px;height:15px;background:#ccc;position:absolute;right:2px;bottom:2px;cursor:se-resize;"></div>';
+    
+    document.body.appendChild(modal);
+
+    const fname = modal.querySelector('#edit_file_name');
+    const fpassword = modal.querySelector('#edit_file_password');
+    const fcontent = modal.querySelector('#edit_file_content');
+    fname.value = filename;
+    
+    if(filename){
+        fname.readOnly = true;
+        fpassword.placeholder = "文件密码（编辑时无需修改）";
+        fpassword.required = false;
+        
+        // 加载文件内容
+        fetch('/z/' + encodeURIComponent(filename))
+            .then(function(r){ return r.text(); })
+            .then(function(t){ 
+                fcontent.value = t; 
+            })
+            .catch(function(){ 
+                fcontent.value = '(无法显示二进制文件，可直接保存覆盖)'; 
+            });
+    } else { 
+        fname.readOnly = false; 
+        fpassword.required = true;
+        fcontent.value = ''; 
+    }
+
+    // 关闭按钮事件
+    modal.querySelector('.close-btn').onclick = function(){modal.remove(); overlay.remove();};
+
+    // 拖拽功能
+    const header = modal.querySelector('#modalHeader');
+    let isDragging = false, offsetX = 0, offsetY = 0;
+    header.addEventListener('mousedown', function(e){
+        if(e.target.tagName !== 'BUTTON'){
+            isDragging = true;
+            offsetX = e.clientX - modal.offsetLeft;
+            offsetY = e.clientY - modal.offsetTop;
+        }
+    });
+    
+    document.addEventListener('mousemove', function(e){
+        if(isDragging){
+            modal.style.left = (e.clientX - offsetX) + 'px';
+            modal.style.top = (e.clientY - offsetY) + 'px';
+        }
+    });
+    
+    document.addEventListener('mouseup', function(e){
+        isDragging = false;
+    });
+
+    // 最大化/恢复功能
+    let isMaximized = false, prevSize = {width:0, height:0, left:0, top:0};
+    const maximizeBtn = modal.querySelector('#maximizeBtn');
+    maximizeBtn.onclick = function(){
+        if(!isMaximized){
+            prevSize.width = modal.offsetWidth;
+            prevSize.height = modal.offsetHeight;
+            prevSize.left = modal.offsetLeft;
+            prevSize.top = modal.offsetTop;
+            modal.style.left = '0';
+            modal.style.top = '0';
+            modal.style.width = '100%';
+            modal.style.height = '100%';
+            modal.style.transform = 'none';
+            isMaximized = true;
+        } else {
+            modal.style.width = prevSize.width + 'px';
+            modal.style.height = prevSize.height + 'px';
+            modal.style.left = prevSize.left + 'px';
+            modal.style.top = prevSize.top + 'px';
+            modal.style.transform = 'translate(-50%,-50%)';
+            isMaximized = false;
+        }
+        adjustTextarea();
+    };
+
+    // 调整大小功能
+    const resizeHandle = modal.querySelector('#resizeHandle');
+    let isResizing = false;
+    resizeHandle.addEventListener('mousedown', function(e){
+        e.stopPropagation();
+        isResizing = true;
+    });
+    
+    document.addEventListener('mousemove', function(e){
+        if(isResizing){
+            modal.style.width = (e.clientX - modal.offsetLeft) + 'px';
+            modal.style.height = (e.clientY - modal.offsetTop) + 'px';
+            adjustTextarea();
+        }
+    });
+    
+    document.addEventListener('mouseup', function(e){
+        isResizing = false;
+    });
+
+    function adjustTextarea(){
+        const headerHeight = header.offsetHeight;
+        const nameHeight = fname.offsetHeight;
+        const passwordHeight = fpassword.offsetHeight;
+        const btnHeight = modal.querySelector('button[name="save_file"]').offsetHeight;
+        const padding = 40;
+        fcontent.style.height = (modal.offsetHeight - headerHeight - nameHeight - passwordHeight - btnHeight - padding) + 'px';
+    }
+    
+    window.addEventListener('resize', adjustTextarea);
+    adjustTextarea();
+}
+
+// 显示密码功能
+function showPassword(filename, password){
+    // 移除已存在的模态框
+    const existingModal = document.getElementById('passwordModal');
+    const existingOverlay = document.getElementById('passwordOverlay');
+    if(existingModal) existingModal.remove();
+    if(existingOverlay) existingOverlay.remove();
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.id = 'passwordOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:999;';
+    document.body.appendChild(overlay);
+
+    // 创建模态框
+    const modal = document.createElement('div');
+    modal.id = 'passwordModal';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:400px;max-width:90%;padding:15px;background:white;border:1px solid #ccc;box-shadow:0 0 12px rgba(0,0,0,0.3);z-index:1000;';
+    
+    modal.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><span><strong>文件密码：</strong>' + filename + '</span><span class="close-btn" style="cursor:pointer;color:#d9534f;font-weight:bold;font-size:16px;">×</span></div><div style="padding:10px;background:#f9f9f9;border:1px solid #ddd;border-radius:4px;margin-bottom:10px;"><strong>密码：</strong><span style="font-family:monospace;color:#d9534f;">' + password + '</span></div><div style="display:flex;justify-content:space-between;"><button type="button" class="search-btn" onclick="copyPassword(\\'' + password + '\\')">📋 复制密码</button><button type="button" class="search-btn" onclick="editPassword(\\'' + filename + '\\', \\'' + password + '\\')">✏️ 修改密码</button></div>';
+    
+    document.body.appendChild(modal);
+
+    // 关闭按钮事件
+    modal.querySelector('.close-btn').onclick = function(){modal.remove(); overlay.remove();};
+    overlay.onclick = function(){modal.remove(); overlay.remove();};
+}
+
+// 复制密码函数
+function copyPassword(password) {
+    navigator.clipboard.writeText(password)
+        .then(() => alert('密码已复制到剪贴板'))
+        .catch(err => alert('复制失败: ' + err));
+}
+
+// 修改密码功能
+function editPassword(filename, currentPassword){
+    // 移除已存在的模态框
+    const existingModal = document.getElementById('editPasswordModal');
+    const existingOverlay = document.getElementById('editPasswordOverlay');
+    if(existingModal) existingModal.remove();
+    if(existingOverlay) existingOverlay.remove();
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.id = 'editPasswordOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:999;';
+    document.body.appendChild(overlay);
+
+    // 创建模态框
+    const modal = document.createElement('form');
+    modal.id = 'editPasswordModal';
+    modal.method = 'post';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:400px;max-width:90%;padding:15px;background:white;border:1px solid #ccc;box-shadow:0 0 12px rgba(0,0,0,0.3);z-index:1000;';
+    
+    modal.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><span><strong>修改密码：</strong>' + filename + '</span><span class="close-btn" style="cursor:pointer;color:#d9534f;font-weight:bold;font-size:16px;">×</span></div><div style="margin-bottom:10px;"><label>当前密码：</label><span style="font-family:monospace;color:#777;">' + currentPassword + '</span></div><input type="text" name="new_password" placeholder="输入新密码" value="' + currentPassword + '" style="width:100%;padding:8px;box-sizing:border-box;border:1px solid #ddd;margin-bottom:10px;"><div style="display:flex;justify-content:space-between;"><button type="button" class="search-btn" onclick="updatePassword(\\'' + filename + '\\', this.form.new_password.value)">💾 更新密码</button></div>';
+    
+    document.body.appendChild(modal);
+
+    // 关闭按钮事件
+    modal.querySelector('.close-btn').onclick = function(){modal.remove(); overlay.remove();};
+    overlay.onclick = function(){modal.remove(); overlay.remove();};
+}
+
+// 更新密码函数
+function updatePassword(filename, newPassword) {
+    if (!newPassword) {
+        alert('请输入新密码');
+        return;
+    }
+    
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'update_password.php', true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    
+    const params = 'filename=' + encodeURIComponent(filename) + 
+                  '&new_password=' + encodeURIComponent(newPassword);
+    
+    xhr.send(params);
+    
+    xhr.onload = function() {
+        if(xhr.status === 200) {
+            try {
+                const response = JSON.parse(xhr.responseText);
+                if(response.success) {
+                    alert('密码更新成功');
+                    document.getElementById('editPasswordModal').remove();
+                    document.getElementById('editPasswordOverlay').remove();
+                    document.getElementById('passwordModal').remove();
+                    document.getElementById('passwordOverlay').remove();
+                    location.reload();
+                } else {
+                    alert('密码更新失败: ' + (response.error || ''));
+                }
+            } catch(e) {
+                alert('解析响应失败: ' + e.message);
+            }
+        } else {
+            alert('请求失败: ' + xhr.statusText);
+        }
+    };
+    
+    xhr.onerror = function() {
+        alert('网络错误');
+    };
+}
+
+// 编辑备注弹窗 - 修复版本
+function editRemark(filename, currentRemark){
+    if(currentRemark === undefined) currentRemark = '';
+    
+    // 移除已存在的模态框
+    const existingModal = document.getElementById('remarkModal');
+    const existingOverlay = document.getElementById('remarkOverlay');
+    if(existingModal) existingModal.remove();
+    if(existingOverlay) existingOverlay.remove();
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.id = 'remarkOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:999;';
+    document.body.appendChild(overlay);
+
+    // 创建模态框 - 修复：使用正确的表单字段名和提交方式
+    const modal = document.createElement('form');
+    modal.id = 'remarkModal';
+    modal.method = 'post';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:500px;max-width:90%;padding:15px;background:white;border:1px solid #ccc;box-shadow:0 0 12px rgba(0,0,0,0.3);z-index:1000;';
+    
+    modal.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><span><strong>编辑备注：</strong>' + filename + '</span><span class="close-btn" style="cursor:pointer;color:#d9534f;font-weight:bold;font-size:16px;">×</span></div><input type="hidden" name="file_name" value="' + filename + '"><textarea name="remark_content" style="width:100%;height:120px;padding:8px;box-sizing:border-box;border:1px solid #ddd;resize:vertical;">' + currentRemark + '</textarea><div style="margin-top:10px;display:flex;justify-content:space-between;"><button type="button" class="search-btn" onclick="this.form.querySelector(\\'textarea\\').value=\\'\\'">清空备注</button><button type="submit" name="save_remark" value="1" class="search-btn">💾 保存备注</button></div>';
+    
+    document.body.appendChild(modal);
+
+    // 关闭按钮事件
+    modal.querySelector('.close-btn').onclick = function(){modal.remove(); overlay.remove();};
+    overlay.onclick = function(){modal.remove(); overlay.remove();};
+}
+
+// 上传文件弹窗
+function uploadFiles(){
+    // 移除已存在的模态框
+    const existingModal = document.getElementById('uploadModal');
+    const existingOverlay = document.getElementById('uploadOverlay');
+    if(existingModal) existingModal.remove();
+    if(existingOverlay) existingOverlay.remove();
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.id = 'uploadOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:999;';
+    document.body.appendChild(overlay);
+
+    // 创建模态框
+    const modal = document.createElement('div');
+    modal.id = 'uploadModal';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:500px;max-width:90%;max-height:80%;padding:10px;background:white;border:1px solid #ccc;box-shadow:0 0 12px rgba(0,0,0,0.3);z-index:1000;display:flex;flex-direction:column;';
+    
+    modal.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span>上传文件</span><span class="close-btn" style="cursor:pointer;color:#d9534f;font-weight:bold;font-size:16px;">×</span></div><div style="margin-bottom:10px;"><input type="text" id="uploadPassword" placeholder="文件密码（默认：default_password）" style="width:100%;padding:6px;box-sizing:border-box;"></div><div id="uploadContent" style="flex:1;overflow:auto;padding:5px;border:1px dashed #aaa;display:flex;flex-direction:column;gap:4px;"><input type="file" id="fileInput" multiple><div id="fileList"></div><div id="progressContainer"></div></div><button id="startUpload" class="search-btn" style="margin-top:6px;">📤 开始上传</button>';
+    
+    document.body.appendChild(modal);
+
+    // 关闭按钮事件
+    modal.querySelector('.close-btn').onclick = function(){modal.remove(); overlay.remove();};
+
+    const startBtn = modal.querySelector('#startUpload');
+    const fileInput = modal.querySelector('#fileInput');
+    const fileList = modal.querySelector('#fileList');
+    const progressContainer = modal.querySelector('#progressContainer');
+    const uploadPassword = modal.querySelector('#uploadPassword');
+
+    // 显示选择的文件列表
+    fileInput.addEventListener('change', function() {
+        fileList.innerHTML = '';
+        for(let i = 0; i < this.files.length; i++) {
+            const file = this.files[i];
+            const fileItem = document.createElement('div');
+            fileItem.style.cssText = 'padding:4px;border-bottom:1px solid #eee;font-size:12px;';
+            fileItem.textContent = file.name + ' (' + formatFileSize(file.size) + ')';
+            fileList.appendChild(fileItem);
+        }
+    });
+
+    startBtn.onclick = function(){
+        const files = fileInput.files;
+        if (files.length === 0) {
+            alert('请选择要上传的文件');
+            return;
+        }
+
+        const password = uploadPassword.value || 'default_password';
+        let completedCount = 0;
+
+        for(let i = 0; i < files.length; i++){
+            const file = files[i];
+            const progressBar = document.createElement('div');
+            progressBar.className = 'upload-progress';
+            progressBar.innerHTML = '<div class="upload-bar">0% - ' + file.name + '</div>';
+            progressContainer.appendChild(progressBar);
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', 'upload.php', true);
+                xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                
+                xhr.onload = function(){
+                    completedCount++;
+                    if(xhr.status === 200){
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            if(response.success) {
+                                progressBar.firstChild.style.width = '100%';
+                                progressBar.firstChild.style.background = '#5cb85c';
+                                progressBar.firstChild.textContent = '完成 - ' + file.name;
+                            } else {
+                                progressBar.firstChild.style.background = '#d9534f';
+                                progressBar.firstChild.textContent = '失败 - ' + file.name + ': ' + response.error;
+                            }
+                        } catch(e) {
+                            progressBar.firstChild.style.background = '#d9534f';
+                            progressBar.firstChild.textContent = '错误 - ' + file.name;
+                        }
+                    } else {
+                        progressBar.firstChild.style.background = '#d9534f';
+                        progressBar.firstChild.textContent = '失败 - ' + file.name;
+                    }
+                    
+                    // 所有文件上传完成后刷新页面
+                    if (completedCount === files.length) {
+                        setTimeout(() => {
+                            modal.remove();
+                            overlay.remove();
+                            location.reload();
+                        }, 1000);
+                    }
+                };
+                
+                xhr.onerror = function(){
+                    completedCount++;
+                    progressBar.firstChild.style.background = '#d9534f';
+                    progressBar.firstChild.textContent = '错误 - ' + file.name;
+                    
+                    if (completedCount === files.length) {
+                        setTimeout(() => {
+                            modal.remove();
+                            overlay.remove();
+                            location.reload();
+                        }, 1000);
+                    }
+                };
+                
+                // 构建表单数据
+                const params = 'filename=' + encodeURIComponent(file.name) + 
+                              '&password=' + encodeURIComponent(password) + 
+                              '&content=' + encodeURIComponent(content);
+                xhr.send(params);
+            };
+            
+            reader.onerror = function() {
+                completedCount++;
+                progressBar.firstChild.style.background = '#d9534f';
+                progressBar.firstChild.textContent = '读取失败 - ' + file.name;
+                
+                if (completedCount === files.length) {
+                    setTimeout(() => {
+                        modal.remove();
+                        overlay.remove();
+                        location.reload();
+                    }, 1000);
+                }
+            };
+            
+            reader.readAsText(file);
+        }
+    };
+}
+</script>
+</body>
+</html>
